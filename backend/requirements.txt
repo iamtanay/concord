@@ -1,0 +1,11 @@
+laya
+fastapi
+uvicorn[standard]
+python-multipart
+sentence-transformers
+chromadb
+rank-bm25
+ollama
+pydantic
+pypdf
+python-docx
