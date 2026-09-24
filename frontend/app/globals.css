@@ -556,6 +556,10 @@ label.field {
   border-top: 1px solid var(--line);
   padding-top: var(--s4);
 }
+.verdict-head + .decision {
+  border-top: none;
+  padding-top: 0;
+}
 .override {
   margin-top: var(--s3);
   max-width: 64ch;
@@ -629,6 +633,25 @@ label.field {
 @media (max-width: 720px) {
   .shell {
     padding: 0 var(--s2);
+  }
+  .masthead {
+    flex-wrap: wrap;
+    row-gap: var(--s1);
+    column-gap: var(--s3);
+  }
+  .nav a {
+    white-space: nowrap;
+  }
+  .masthead-status {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  main {
+    padding-top: var(--s6);
+  }
+  .verdict-stats {
+    flex-wrap: wrap;
+    row-gap: 4px;
   }
   .pair {
     grid-template-columns: 1fr;

@@ -97,13 +97,13 @@ export default function VerdictFinding({ job, onReset }: { job: Job; onReset: ()
         {!job.duplicate_of && (
           <div className="verdict-stats">
             <span>
-              <span className="figure">{job.claims_checked ?? 0}</span> claims read
+              <span className="figure">{job.claims_checked ?? 0}</span> {job.claims_checked === 1 ? "claim" : "claims"} read
             </span>
             <span>
-              <span className="figure">{job.pairs_checked ?? 0}</span> passages compared
+              <span className="figure">{job.pairs_checked ?? 0}</span> {job.pairs_checked === 1 ? "passage" : "passages"} compared
             </span>
             <span>
-              <span className="figure">{job.documents_total}</span> documents in the record
+              <span className="figure">{job.documents_total}</span> {job.documents_total === 1 ? "document" : "documents"} in the record
             </span>
           </div>
         )}
