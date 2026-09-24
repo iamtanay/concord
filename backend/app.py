@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import threading
 import traceback
@@ -70,12 +71,17 @@ def _progress(job: dict, stage: str, progress: float, message: str) -> None:
 
 
 def _citation(chunk: dict) -> str:
-    parts = [chunk["filename"]]
-    if chunk.get("section_path"):
-        parts.append(chunk["section_path"].split(" > ")[-1])
+    """'ABC.pdf §3.2, p.7' — the short form used inside explanations."""
+    cite = chunk["filename"]
+    section = (chunk.get("section_path") or "").split(" > ")[-1]
+    m = re.match(r"^(\d+(?:\.\d+)*)\.?\s", section)
+    if m:
+        cite += f" §{m.group(1)}"
+    elif section:
+        cite += f", {section}"
     if chunk.get("page"):
-        parts.append(f"p.{chunk['page']}")
-    return ", ".join(parts)
+        cite += f", p.{chunk['page']}"
+    return cite
 
 
 def _norm(s: str) -> str:
