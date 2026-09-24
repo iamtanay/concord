@@ -45,15 +45,18 @@ contradiction calls, and a small local LLM confirms and explains the few pairs t
 
 <br>
 
+<p align="center">
+  <img alt="One finding: the passage in the record beside the passage in the upload, with its source and confidence" src="docs/media/finding.png" width="100%">
+</p>
+<p><b>Conflict found.</b> Each finding pairs the passage in the record with the passage in the upload, underlines the values that disagree, cites the exact section, and explains the conflict in the record's own words. The full verdict, grouped by conflicting document, is in <a href="docs/media/verdict-conflict.png">this screenshot</a>.</p>
+
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img alt="Conflict found" src="docs/media/verdict-conflict.png">
-      <p><b>Conflict found.</b> Each finding pairs the passage in the record with the passage in the upload, cites the exact section, and explains the conflict with the real values.</p>
-    </td>
-    <td width="50%" valign="top">
       <img alt="In concord" src="docs/media/verdict-concord.png">
       <p><b>In concord.</b> Nothing contradicts the record. One click adds the file, and it becomes part of what the next upload is checked against.</p>
+    </td>
+    <td width="50%" valign="top">
       <img alt="Already in the record" src="docs/media/verdict-duplicate.png">
       <p><b>Already in the record.</b> An identical file, or a copy with the same claims, is rejected outright. It cannot be added even with an override.</p>
     </td>
