@@ -407,7 +407,8 @@ label.field {
   background: currentColor;
   flex: none;
 }
-.verdict-title.conflict {
+.verdict-title.conflict,
+.verdict-title.duplicate {
   color: var(--conflict);
 }
 .verdict-title.review {

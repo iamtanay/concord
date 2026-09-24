@@ -1,6 +1,6 @@
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-export type Verdict = "conflict" | "review" | "concord";
+export type Verdict = "conflict" | "review" | "concord" | "duplicate";
 
 export interface DocumentRow {
   id: string;
@@ -63,7 +63,7 @@ export interface Job {
   verdict: Verdict | null;
   conflicts: Finding[];
   documents: { document_id: string; filename: string; conflicts: number; reviews: number }[];
-  duplicate_of: { id: string; filename: string } | null;
+  duplicate_of: { id: string; filename: string; match: "identical" | "same_claims" } | null;
   claims_checked?: number;
   pairs_checked?: number;
   error?: string;

@@ -13,12 +13,16 @@ const HEAD = {
   conflict: "Conflict found",
   review: "Needs review",
   concord: "In concord",
+  duplicate: "Already in the record",
 } as const;
 
 function subline(job: Job): string {
   const docs = job.documents.length;
   const conflicts = job.conflicts.filter((f) => f.severity === "conflict").length;
-  if (job.duplicate_of) return `This exact file is already in the record as ${job.duplicate_of.filename}.`;
+  if (job.duplicate_of)
+    return job.duplicate_of.match === "identical"
+      ? `This file is identical to ${job.duplicate_of.filename}. A second copy cannot be added.`
+      : `Every claim in this file is already stated in ${job.duplicate_of.filename}. A second copy cannot be added.`;
   if (job.verdict === "conflict")
     return `This upload contradicts ${plural(docs, "document")} in the record${
       conflicts > 1 ? `, in ${conflicts} places` : ""
@@ -88,7 +92,7 @@ export default function VerdictFinding({ job, onReset }: { job: Job; onReset: ()
     <article className="verdict">
       <header className="verdict-head">
         <p className="verdict-filename">{job.filename}</p>
-        <h1 className={`verdict-title ${verdict}`}>{job.duplicate_of ? "Already in the record" : HEAD[verdict]}</h1>
+        <h1 className={`verdict-title ${verdict}`}>{HEAD[verdict]}</h1>
         <p className="verdict-sub">{subline(job)}</p>
         {!job.duplicate_of && (
           <div className="verdict-stats">
@@ -141,8 +145,11 @@ export default function VerdictFinding({ job, onReset }: { job: Job; onReset: ()
       <footer className="decision">
         {job.duplicate_of ? (
           <div className="actions">
-            <button className="button primary" onClick={onReset}>
-              Check another file
+            <Link className="button" href={`/documents/${job.duplicate_of.id}`}>
+              Open {job.duplicate_of.filename}
+            </Link>
+            <button className={cls("cancel", "button quiet")} disabled={locked} onClick={() => run("cancel")}>
+              {label("cancel", "Cancel upload", "Cancelling", "Cancelled")}
             </button>
           </div>
         ) : (
