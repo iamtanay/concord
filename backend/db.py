@@ -149,6 +149,21 @@ class Store:
             (filename,),
         )
 
+    def find_same_claims(self, claim_keys: set[str], normalize) -> dict | None:
+        """An indexed document that already states every one of these claims (a re-saved copy)."""
+        if not claim_keys:
+            return None
+        per_doc: dict[str, set[str]] = {}
+        for r in self.query(
+            "SELECT c.document_id, c.claim_text FROM chunk c JOIN document d ON d.id = c.document_id "
+            "WHERE d.status = 'indexed'"
+        ):
+            per_doc.setdefault(r["document_id"], set()).add(normalize(r["claim_text"]))
+        for doc_id, keys in per_doc.items():
+            if claim_keys <= keys:
+                return self.one("SELECT * FROM document WHERE id = ?", (doc_id,))
+        return None
+
     def add_document(
         self, filename: str, sha256: str, chunks: list[dict], embeddings: list[list[float]],
         uploaded_by: str = "local", version: int = 1,
@@ -248,6 +263,12 @@ class Store:
             ids = self._bm25_ids
         order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
         return [(ids[i], float(scores[i])) for i in order if scores[i] > 0]
+
+    def get_embeddings(self, ids: list[str]) -> dict[str, list[float]]:
+        if not ids:
+            return {}
+        res = self.claims.get(ids=ids, include=["embeddings"])
+        return {i: list(e) for i, e in zip(res["ids"], res["embeddings"])}
 
     def dense_search(self, embedding: list[float], k: int) -> list[tuple[str, float]]:
         n = self.claims.count()

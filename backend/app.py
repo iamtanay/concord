@@ -18,7 +18,7 @@ import contradict
 import ingest
 import retrieve
 from db import UPLOAD_DIR, get_store, new_id, now
-from policy import CONCORD, CONFIG, CONFLICT, REVIEW, aggregate, config_dict, laya_triage
+from policy import CONCORD, CONFIG, CONFLICT, DUPLICATE, REVIEW, aggregate, config_dict, laya_triage
 
 log = logging.getLogger("concord")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -97,13 +97,16 @@ def run_audit(job_id: str) -> None:
         job["documents_total"] = n_docs
         duplicate = store.find_by_sha(upload["sha256"])
         if duplicate:
-            job["duplicate_of"] = {"id": duplicate["id"], "filename": duplicate["filename"]}
-            _finish(job, upload, [], 0, 0)
+            _reject_duplicate(job, upload, duplicate, "identical")
             return
 
         _progress(job, "reading", 0.02, "Reading the upload")
         claims = ingest.extract_claims(upload["path"])
         job["claims_total"] = len(claims)
+        duplicate = store.find_same_claims({_norm(c["claim_text"]) for c in claims}, _norm)
+        if duplicate:
+            _reject_duplicate(job, upload, duplicate, "same_claims")
+            return
         if not claims:
             _finish(job, upload, [], 0, 0)
             return
@@ -112,45 +115,34 @@ def run_audit(job_id: str) -> None:
         vectors = ingest.embed([c["claim_text"] for c in claims])
         candidates = retrieve.candidates_for_claims([c["claim_text"] for c in claims], vectors)
 
+        # Pairs below the subject floor can neither flag nor enter review: skip Laya for them.
         work = []
         for claim, cands in zip(claims, candidates):
             for cand in cands:
-                if cand["rerank_score"] < CONFIG.rerank_min:
+                if cand["similarity"] < CONFIG.subject_floor:
                     continue
                 if _norm(cand["claim_text"]) == _norm(claim["claim_text"]):
                     continue  # identical statement, cannot contradict
                 work.append((claim, cand))
+        job["pairs_total"] = len(work)
 
         flagged: list[dict] = []
-        for i, (claim, cand) in enumerate(work):
-            _progress(job, "checking", 0.12 + 0.68 * (i / max(len(work), 1)),
+        step = contradict.BATCH_SIZE
+        for start in range(0, len(work), step):
+            _progress(job, "checking", 0.12 + 0.68 * (start / max(len(work), 1)),
                       f"Auditing against {n_docs} documents")
-            pair = {
-                "new_claim": claim["raw_text"],
-                "new_section_path": claim["section_path"],
-                "new_page": claim["page"],
-                "existing": cand,
-                "same_subject": None, "contradicts": None, "confidence": None,
-                "numeric": None, "llm": None,
-            }
+            batch = work[start : start + step]
             try:
-                r = contradict.check_pair(cand["claim_text"], claim["claim_text"])
-                pair.update(r)
-                num = contradict.numeric_conflict(cand["claim_text"], claim["claim_text"], CONFIG.numeric_rel_tol)
-                pair["numeric"] = list(num) if num else None
-                triage = laya_triage(r["same_subject"], r["contradicts"], r["confidence"], bool(num))
-            except Exception as e:
-                log.warning("laya failed on pair: %s", e)
-                triage = "review"
-                pair["error"] = "Contradiction check failed on this pair"
-            if triage:
-                pair["triage"] = triage
-                pair["laya_flag"] = (
-                    pair["same_subject"] is not None
-                    and pair["same_subject"] >= CONFIG.tau_subject
-                    and pair["contradicts"] >= CONFIG.tau_contra
+                results: list[dict | None] = contradict.check_pairs(
+                    [(cand["claim_text"], claim["claim_text"]) for claim, cand in batch]
                 )
-                flagged.append(pair)
+            except Exception as e:
+                log.warning("laya failed on a batch: %s", e)
+                results = [None] * len(batch)
+            for (claim, cand), r in zip(batch, results):
+                pair = _triage_pair(claim, cand, r)
+                if pair:
+                    flagged.append(pair)
 
         pairs = _adjudicate(job, flagged, n_docs)
         _finish(job, upload, pairs, len(claims), len(work))
@@ -159,32 +151,64 @@ def run_audit(job_id: str) -> None:
         job.update(status="error", error=f"{type(e).__name__}: {e}", stage="error")
 
 
+def _triage_pair(claim: dict, cand: dict, r: dict | None) -> dict | None:
+    """Apply the gate to one pair. A failed Laya call goes to Review, never to concord."""
+    pair = {
+        "new_claim": claim["raw_text"],
+        "new_section_path": claim["section_path"],
+        "new_page": claim["page"],
+        "existing": cand,
+        "same_subject": cand["similarity"], "contradicts": None, "confidence": None,
+        "numeric": None, "llm": None, "laya_flag": False,
+    }
+    numeric, values = contradict.compare_quantities(cand["claim_text"], claim["claim_text"], CONFIG.numeric_rel_tol)
+    pair["numeric"] = list(values) if values else None
+    if r is None:
+        pair["triage"] = "review"
+        pair["error"] = "The contradiction check failed on this pair."
+        return pair
+    pair.update(r)
+    triage = laya_triage(cand["similarity"], r["contradicts"], r["confidence"], numeric)
+    if not triage:
+        return None
+    pair["triage"] = triage
+    pair["laya_flag"] = cand["similarity"] >= CONFIG.tau_subject and r["contradicts"] >= CONFIG.tau_contra
+    return pair
+
+
 def _adjudicate(job: dict, flagged: list[dict], n_docs: int) -> list[dict]:
     """LLM confirms + explains the flagged pairs. Returns the surviving pairs with a severity."""
-    # Keep only the strongest pair per (new claim, existing chunk) and cap the LLM's workload.
-    to_llm = [p for p in flagged if p["triage"] == "flag"]
-    survivors: list[dict] = [dict(p, severity=REVIEW) for p in flagged if p["triage"] == "review"]
+    gray = sorted((p for p in flagged if p["triage"] == "review" and not p.get("error")),
+                  key=lambda p: -(p["contradicts"] or 0))
+    to_llm = [p for p in flagged if p["triage"] == "flag"] + gray[: CONFIG.gray_llm_cap]
+    survivors: list[dict] = [
+        dict(p, severity=REVIEW) for p in flagged if p["triage"] == "review" and p not in to_llm
+    ]
     for i, p in enumerate(to_llm):
         _progress(job, "adjudicating", 0.8 + 0.18 * (i / max(len(to_llm), 1)),
                   f"Confirming {len(to_llm)} flagged passage{'s' if len(to_llm) != 1 else ''}")
         ex = p["existing"]
         hint = ""
         if p["numeric"]:
-            hint = f'The passages state different quantities: "{p["numeric"][0]}" vs "{p["numeric"][1]}".'
+            hint = (f'The passages mention "{p["numeric"][0]}" and "{p["numeric"][1]}". These only conflict '
+                    "if they are values of the same thing.")
         verdict = None
         try:
             verdict = adjudicate.adjudicate(p["new_claim"], ex["raw_text"], _citation(ex), hint)
         except Exception as e:
             log.warning("llm failed: %s", e)
         p["llm"] = verdict
-        if verdict is None:
+        if p["triage"] == "review":
+            # Gray zone: the LLM may clear it, but can never escalate it to a block.
+            severity = None if verdict and not verdict["is_conflict"] else REVIEW
+        elif verdict is None:
             severity = REVIEW                      # no second opinion: never hard-block
         elif verdict["is_conflict"] and verdict["confidence"] >= CONFIG.llm_min_confidence:
             severity = CONFLICT
         elif verdict["is_conflict"]:
             severity = REVIEW                      # LLM uncertain
-        elif p["numeric"] and not p["laya_flag"]:
-            severity = REVIEW if p["same_subject"] >= CONFIG.tau_subject else None
+        elif p["laya_flag"] and p["contradicts"] >= CONFIG.strong_contra and p["same_subject"] >= CONFIG.strong_subject:
+            severity = REVIEW                      # strong Laya signal the LLM disputes: a human decides
         else:
             severity = None                        # Laya over-fired; LLM cleared it
         if severity:
@@ -192,9 +216,16 @@ def _adjudicate(job: dict, flagged: list[dict], n_docs: int) -> list[dict]:
     return survivors
 
 
-def _finish(job: dict, upload: dict, pairs: list[dict], n_claims: int, n_pairs: int) -> None:
+def _reject_duplicate(job: dict, upload: dict, doc: dict, match: str) -> None:
+    """A file already in the record is rejected outright; it can never be committed a second time."""
+    job["duplicate_of"] = {"id": doc["id"], "filename": doc["filename"], "match": match}
+    _finish(job, upload, [], job.get("claims_total", 0), 0, decision=DUPLICATE)
+
+
+def _finish(job: dict, upload: dict, pairs: list[dict], n_claims: int, n_pairs: int,
+            decision: str | None = None) -> None:
     store = get_store()
-    decision = aggregate(pairs)
+    decision = decision or aggregate(pairs)
     report_id = new_id()
     store.execute(
         "INSERT INTO conflict_report (id, upload_id, decision, created_at) VALUES (?, ?, ?, ?)",
@@ -369,6 +400,8 @@ def commit(req: CommitRequest):
         raise HTTPException(409, "This upload has not finished its audit")
 
     decision = upload["decision"]
+    if decision == DUPLICATE:
+        raise HTTPException(409, "This file is already in the record. A second copy cannot be added.")
     if req.action == "commit" and decision == CONFLICT:
         raise HTTPException(409, "This upload conflicts with the record. Replace the conflicting file or override with a reason.")
     if req.action == "override" and not (req.reason or "").strip():
