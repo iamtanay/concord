@@ -175,6 +175,11 @@ def check_pair(existing_claim: str, new_claim: str) -> dict:
 confirm the exact keys (`["answers"]["contradicts"]["noul"]`, `["confidence"]`) against the installed
 version. Do not assume.
 
+> **Discovery result (laya 0.3.20, done):** keys confirmed. The instructions above do not work as
+> written: they must name the state keys in backticks (`` `existing` ``, `` `new` ``), and Laya's
+> `same_subject` tracks agreement rather than topic. The build therefore gates subject on embedding
+> cosine and asks Laya only `contradicts`. See `backend/contradict.py` and the README's discovery notes.
+
 **Why two gated questions, not one.** `contradicts` alone fires on unrelated statements that merely
 look opposed. Requiring `same_subject` AND `contradicts` — both high-confidence — removes most false
 positives. This is deliberate: a lesson from earlier builds is that merging or under-gating classifier
