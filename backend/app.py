@@ -179,10 +179,12 @@ def _triage_pair(claim: dict, cand: dict, r: dict | None) -> dict | None:
 def _adjudicate(job: dict, flagged: list[dict], n_docs: int) -> list[dict]:
     """LLM confirms + explains the flagged pairs. Returns the surviving pairs with a severity."""
     gray = sorted((p for p in flagged if p["triage"] == "review" and not p.get("error")),
-                  key=lambda p: -(p["contradicts"] or 0))
-    to_llm = [p for p in flagged if p["triage"] == "flag"] + gray[: CONFIG.gray_llm_cap]
+                  key=lambda p: -(p["contradicts"] or 0))[: CONFIG.gray_llm_cap]
+    gray_ids = {id(p) for p in gray}
+    to_llm = [p for p in flagged if p["triage"] == "flag"] + gray
+    # Gray-zone pairs beyond the cap stay in Review without a second opinion.
     survivors: list[dict] = [
-        dict(p, severity=REVIEW) for p in flagged if p["triage"] == "review" and p not in to_llm
+        dict(p, severity=REVIEW) for p in flagged if p["triage"] == "review" and id(p) not in gray_ids
     ]
     for i, p in enumerate(to_llm):
         _progress(job, "adjudicating", 0.8 + 0.18 * (i / max(len(to_llm), 1)),
