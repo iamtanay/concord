@@ -1,8 +1,18 @@
-"""Stage 2: candidate generation. Dense + BM25 -> Reciprocal Rank Fusion -> cross-encoder rerank."""
+"""Stage 2: candidate generation.
+
+Dense + BM25 -> Reciprocal Rank Fusion -> cross-encoder rerank -> top N.
+
+The reranker is a relevance model: it scores a *contradicting* passage as irrelevant
+(e.g. 0.002 for "Business class is permitted..." vs "Business class is never permitted").
+So its ranking is fused with the dense and sparse rankings rather than used as the final
+filter; a contradiction that is close in embedding space still makes the top N.
+"""
 from __future__ import annotations
 
 import os
 import threading
+
+import numpy as np
 
 from db import get_store
 from policy import CONFIG
@@ -34,45 +44,38 @@ def rrf(rankings: list[list[str]], k: int = 60) -> list[str]:
 def candidates_for_claims(
     claims: list[str], embeddings: list[list[float]], exclude_doc_ids: set[str] | None = None
 ) -> list[list[dict]]:
-    """For each new claim, return the top-N existing chunks (with rerank score)."""
+    """For each new claim, the top-N existing chunks, each with `similarity` and `rerank_score`."""
+    import torch
+
     store = get_store()
     exclude = exclude_doc_ids or set()
-    fused_lists: list[list[str]] = []
+    fused: list[list[str]] = []
     for claim, vec in zip(claims, embeddings):
         dense = [cid for cid, _ in store.dense_search(vec, CONFIG.dense_k)]
         sparse = [cid for cid, _ in store.bm25_search(claim, CONFIG.sparse_k)]
-        fused_lists.append(rrf([dense, sparse])[: CONFIG.fused_k])
+        fused.append(rrf([dense, sparse])[: CONFIG.fused_k])
 
-    all_ids = sorted({cid for lst in fused_lists for cid in lst})
-    chunks = store.get_chunks(all_ids)
+    all_ids = sorted({cid for lst in fused for cid in lst})
+    chunks = {cid: c for cid, c in store.get_chunks(all_ids).items() if c["document_id"] not in exclude}
+    vectors = store.get_embeddings(list(chunks))
 
-    pairs: list[tuple[int, str]] = []
-    for i, lst in enumerate(fused_lists):
-        for cid in lst:
-            ch = chunks.get(cid)
-            if ch and ch["document_id"] not in exclude:
-                pairs.append((i, cid))
-
-    scores: list[float] = []
+    pairs = [(i, cid) for i, lst in enumerate(fused) for cid in lst if cid in chunks]
+    rerank: list[float] = []
     if pairs:
-        model = get_reranker()
-        scores = model.predict(
+        rerank = get_reranker().predict(
             [(claims[i], chunks[cid]["claim_text"]) for i, cid in pairs],
-            batch_size=32,
-            show_progress_bar=False,
-            activation_fn=_sigmoid(),
+            batch_size=32, show_progress_bar=False, activation_fn=torch.nn.Sigmoid(),
         ).tolist()
 
-    per_claim: list[list[dict]] = [[] for _ in claims]
-    for (i, cid), s in zip(pairs, scores):
-        per_claim[i].append({**chunks[cid], "rerank_score": float(s)})
-    for lst in per_claim:
-        lst.sort(key=lambda c: c["rerank_score"], reverse=True)
-        del lst[CONFIG.top_n :]
-    return per_claim
+    scored: list[dict[str, dict]] = [{} for _ in claims]
+    for (i, cid), r in zip(pairs, rerank):
+        sim = float(np.dot(embeddings[i], vectors[cid])) if cid in vectors else 0.0
+        scored[i][cid] = {**chunks[cid], "rerank_score": float(r), "similarity": sim}
 
-
-def _sigmoid():
-    import torch
-
-    return torch.nn.Sigmoid()
+    out: list[list[dict]] = []
+    for i, cands in enumerate(scored):
+        by_sim = sorted(cands, key=lambda c: cands[c]["similarity"], reverse=True)
+        by_rerank = sorted(cands, key=lambda c: cands[c]["rerank_score"], reverse=True)
+        order = rrf([fused[i], by_sim, by_rerank])
+        out.append([cands[c] for c in order if c in cands][: CONFIG.top_n])
+    return out
